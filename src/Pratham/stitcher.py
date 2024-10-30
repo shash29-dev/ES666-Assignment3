@@ -1,46 +1,47 @@
+import pdb
+import glob
 import cv2
+import os
 import numpy as np
 import random
-import os
 
 class PanaromaStitcher:
-    def __init__(self):
-        self.homography_matrix_list = []
-
+    def _init_(self):
+        pass
+    
     def make_panaroma_for_images_in(self, path):
-        image_files = sorted([f for f in os.listdir(path) if f.endswith('.JPG')])
-        if len(image_files) < 2:
-            raise ValueError("At least two images are required for stitching.")
+        # Get sorted list of image paths
+        all_images = sorted(glob.glob(path + os.sep + '*'))
+        print(f'Found {len(all_images)} images for stitching.')
 
-        # Read and scale down the first image
-        left_img_path = os.path.join(path, image_files[0])
-        left_img = cv2.imread(left_img_path)
-        if left_img is None:
-            raise ValueError(f"Failed to load image at {left_img_path}")
+        # Load the first image
+        base_img = cv2.imread(all_images[0])
+        homography_matrices = []
 
-        scale_percent = 30
-        left_img = cv2.resize(left_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
-        result_img = left_img
+        # Iterate through remaining images and stitch
+        for img_path in all_images[1:]:
+            next_img = cv2.imread(img_path)
 
-        # Process each subsequent image and stitch
-        for img_file in image_files[1:]:
-            right_img_path = os.path.join(path, img_file)
-            right_img = cv2.imread(right_img_path)
-            if right_img is None:
-                print(f"Warning: Failed to load image at {right_img_path}, skipping this image.")
-                continue
+            # Downscale to avoid memory issues
+            scale_percent = 30
+            base_img = cv2.resize(base_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
+            next_img = cv2.resize(next_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
 
-            right_img = cv2.resize(right_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
-            result_img, H = self.stitch_images(result_img, right_img)
-            self.homography_matrix_list.append(H)
+            # Stitch images and compute homography
+            stitched_img, H = self.stitch_images(base_img, next_img)
+            homography_matrices.append(H)
 
-        return result_img, self.homography_matrix_list
+            # Update base_img for the next iteration
+            base_img = stitched_img
 
+        return base_img, homography_matrices
+    
     def stitch_images(self, left_img, right_img):
-        key_points1, descriptor1, key_points2, descriptor2 = self.get_keypoint(left_img, right_img)
-        good_matches = self.match_keypoint(key_points1, key_points2, descriptor1, descriptor2)
+        key_points1, descriptor1, key_points2, descriptor2 = self.get_keypoints(left_img, right_img)
+        good_matches = self.match_keypoints(key_points1, key_points2, descriptor1, descriptor2)
         final_H = self.ransac(good_matches)
 
+        # Transform dimensions for panorama image
         rows1, cols1 = right_img.shape[:2]
         rows2, cols2 = left_img.shape[:2]
 
@@ -52,43 +53,28 @@ class PanaromaStitcher:
         [x_min, y_min] = np.int32(list_of_points.min(axis=0).ravel() - 0.5)
         [x_max, y_max] = np.int32(list_of_points.max(axis=0).ravel() + 0.5)
 
-        H_translation = (np.array([[1, 0, (-x_min)], [0, 1, (-y_min)], [0, 0, 1]])).dot(final_H)
+        # Translation matrix
+        H_translation = np.array([[1, 0, -x_min], [0, 1, -y_min], [0, 0, 1]]) @ final_H
 
-        output_img = self.manual_warp(left_img, H_translation, x_max - x_min, y_max - y_min)
-        output_img[(-y_min):rows1 + (-y_min), (-x_min):cols1 + (-x_min)] = right_img
+        # Warp the left image
+        stitched_img = cv2.warpPerspective(left_img, H_translation, (x_max - x_min, y_max - y_min))
+        stitched_img[-y_min:rows1 - y_min, -x_min:cols1 - x_min] = right_img
 
-        return output_img, final_H
+        return stitched_img, final_H
 
-    def manual_warp(self, src_img, homography, width, height):
-        src_rows, src_cols = src_img.shape[:2]
-        result_img = np.zeros((height, width, 3), dtype=np.uint8)
-        homography_inv = np.linalg.inv(homography)
-
-        for y in range(height):
-            for x in range(width):
-                original_point = np.array([x, y, 1])
-                source_point = homography_inv @ original_point
-                source_point /= source_point[2]
-
-                src_x, src_y = int(source_point[0]), int(source_point[1])
-                if 0 <= src_x < src_cols and 0 <= src_y < src_rows:
-                    result_img[y, x] = src_img[src_y, src_x]
-
-        return result_img
-
-    def get_keypoint(self, left_img, right_img):
+    def get_keypoints(self, left_img, right_img):
         l_img = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY)
         r_img = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY)
+
         sift = cv2.SIFT_create()
         key_points1, descriptor1 = sift.detectAndCompute(l_img, None)
         key_points2, descriptor2 = sift.detectAndCompute(r_img, None)
+
         return key_points1, descriptor1, key_points2, descriptor2
 
-    def match_keypoint(self, key_points1, key_points2, descriptor1, descriptor2):
-        index_params = dict(algorithm=1, trees=5)
-        search_params = dict(checks=50)
-        flann = cv2.FlannBasedMatcher(index_params, search_params)
-        matches = flann.knnMatch(descriptor1, descriptor2, k=2)
+    def match_keypoints(self, key_points1, key_points2, descriptor1, descriptor2):
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(descriptor1, descriptor2, k=2)
 
         good_matches = []
         for m, n in matches:
@@ -108,7 +94,7 @@ class PanaromaStitcher:
             A.append([0, 0, 0, x, y, 1, -Y * x, -Y * y, -Y])
 
         A = np.array(A)
-        u, s, vh = np.linalg.svd(A)
+        _, _, vh = np.linalg.svd(A)
         H = (vh[-1, :].reshape(3, 3))
         H = H / H[2, 2]
         return H
@@ -116,19 +102,28 @@ class PanaromaStitcher:
     def ransac(self, good_pts):
         best_inliers = []
         final_H = []
-        t = 5
-        for i in range(50):
-            random_pts = random.sample(good_pts, k=4)
+        threshold = 4
+
+        for _ in range(100):
+            random_pts = random.choices(good_pts, k=4)
             H = self.homography(random_pts)
             inliers = []
+
             for pt in good_pts:
                 p = np.array([pt[0], pt[1], 1]).reshape(3, 1)
                 p_1 = np.array([pt[2], pt[3], 1]).reshape(3, 1)
                 Hp = np.dot(H, p)
                 Hp = Hp / Hp[2]
                 dist = np.linalg.norm(p_1 - Hp)
-                if dist < t:
+
+                if dist < threshold:
                     inliers.append(pt)
+
             if len(inliers) > len(best_inliers):
                 best_inliers, final_H = inliers, H
+
         return final_H
+    
+
+
+######

@@ -5,11 +5,11 @@ import os
 import numpy as np
 import random
 
-class PanaromaStitcher:
-    def _init_(self):
+class PanoramaStitcher:
+    def __init__(self):
         pass
     
-    def make_panaroma_for_images_in(self, path):
+    def make_panorama_for_images_in(self, path):
         # Get sorted list of image paths
         all_images = sorted(glob.glob(path + os.sep + '*'))
         print(f'Found {len(all_images)} images for stitching.')
@@ -23,7 +23,7 @@ class PanaromaStitcher:
             next_img = cv2.imread(img_path)
 
             # Downscale to avoid memory issues
-            scale_percent = 30
+            scale_percent = 70
             base_img = cv2.resize(base_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
             next_img = cv2.resize(next_img, None, fx=scale_percent / 100, fy=scale_percent / 100)
 
@@ -104,7 +104,7 @@ class PanaromaStitcher:
         final_H = []
         threshold = 4
 
-        for _ in range(100):
+        for _ in range(1000):
             random_pts = random.choices(good_pts, k=4)
             H = self.homography(random_pts)
             inliers = []
@@ -123,7 +123,4 @@ class PanaromaStitcher:
                 best_inliers, final_H = inliers, H
 
         return final_H
-    
 
-
-######
